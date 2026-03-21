@@ -1,0 +1,136 @@
+/*
+1. Restores .NET dependencies for Ecommerce backend solution.
+2. Performs security vulnerability scan using Trivy.
+3. Runs SonarQube analysis for code quality and static analysis.
+4. Builds the application in Release mode.
+5. Executes unit tests to validate functionality.
+6. Skips Quality Gate wait to avoid pipeline delay (handled in Sonar UI).
+7. Publishes the application into deployable output folder.
+8. Removes sensitive config files (appsettings, web.config).
+9. Packages build output into versioned ZIP artifact.
+10. Uploads artifact to JFrog Artifactory for deployment usage.
+*/
+
+pipeline {
+
+    agent { label 'deploy-agent-build' }
+
+    environment {
+        ARTIFACTORY_URL = "http://192.168.56.1:8082/artifactory/ecommerce-backend"
+        SONAR_HOST_URL = "http://192.168.56.1:9000"
+        SONAR_PROJECT_KEY = "ecommerce-backend"
+    }
+
+    stages {
+
+        stage('Debug Paths') {
+            steps {
+                bat 'dir backend\\src /s'
+            }
+        }
+
+        stage('Restore') {
+            steps {
+                bat 'dotnet restore backend\\Ecommerce.sln'
+            }
+        }
+
+        stage('Security Scan - Trivy') {
+            steps {
+                bat '''
+                echo Running Trivy Security Scan...
+                trivy fs --scanners vuln --timeout 10m --skip-dirs backend/bin,backend/obj --severity HIGH,CRITICAL --format table --output trivy-report.txt .
+                '''
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+
+                        bat """
+                        dotnet sonarscanner begin ^
+                        /k:"%SONAR_PROJECT_KEY%" ^
+                        /d:sonar.host.url="%SONAR_HOST_URL%" ^
+                        /d:sonar.login="%SONAR_TOKEN%" ^
+                        /d:sonar.exclusions="**/bin/**,**/obj/**"
+                        """
+
+                        bat 'dotnet build backend\\Ecommerce.sln -c Release --no-restore'
+
+                        bat """
+                        dotnet sonarscanner end ^
+                        /d:sonar.login="%SONAR_TOKEN%"
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Unit Testing') {
+            steps {
+                bat 'dotnet test backend\\Ecommerce.sln -c Release --no-build'
+            }
+        }
+
+        // 🔥 FAST PIPELINE (skip waiting)
+        stage('Quality Gate') {
+            steps {
+                echo "Skipping Quality Gate wait (handled in Sonar UI)"
+            }
+        }
+
+        stage('Publish') {
+            steps {
+                bat 'dotnet publish backend\\src\\Ecommerce.API\\Ecommerce.API.csproj -c Release -o backend\\publish --no-build'
+            }
+        }
+
+        stage('Clean Config Files') {
+            steps {
+                bat '''
+                powershell Remove-Item backend\\publish\\appsettings*.json -ErrorAction SilentlyContinue
+                powershell Remove-Item backend\\publish\\web.config -ErrorAction SilentlyContinue
+                '''
+            }
+        }
+
+        stage('Create Artifact') {
+            steps {
+                script {
+                    def timestamp = new Date().format("yyyyMMdd-HHmm")
+                    env.ZIP_NAME = "ecommerce-backend-${timestamp}.zip"
+                }
+
+                bat '''
+                powershell Compress-Archive -Path backend\\publish\\* -DestinationPath %ZIP_NAME%
+                '''
+            }
+        }
+
+        stage('Upload to JFrog') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'artifactory-creds', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+
+                    bat '''
+                    curl.exe -u %USER%:%PASS% -T %ZIP_NAME% %ARTIFACTORY_URL%/%ZIP_NAME%
+                    curl.exe -u %USER%:%PASS% -T %ZIP_NAME% %ARTIFACTORY_URL%/latest.zip
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'trivy-report.txt', allowEmptyArchive: true
+        }
+        success {
+            echo "✅ Backend CI Pipeline SUCCESS"
+        }
+        failure {
+            echo "❌ Backend CI Pipeline FAILED"
+        }
+    }
+}

@@ -1,0 +1,36 @@
+.navbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #131921;
+  color: white;
+  padding: 10px 20px;
+}
+
+.logo {
+  font-size: 22px;
+  font-weight: bold;
+}
+
+.search-bar {
+  display: flex;
+  width: 50%;
+}
+
+.search-bar input {
+  width: 100%;
+  padding: 8px;
+  border: none;
+}
+
+.search-bar button {
+  background: #febd69;
+  border: none;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.nav-actions span {
+  margin-left: 20px;
+  cursor: pointer;
+}

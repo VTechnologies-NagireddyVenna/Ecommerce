@@ -65,10 +65,16 @@ pipeline {
             }
         }
 
+        // ✅ FIXED UNIT TEST STAGE (Vitest compatible)
         stage('Unit Testing') {
             steps {
                 dir('frontend\\ecommerce-ui') {
-                    bat 'npm run test -- --watch=false --browsers=ChromeHeadless'
+
+                    // Ensure vitest installed (safe fallback)
+                    bat 'npm install --save-dev vitest'
+
+                    // Run tests (non-interactive mode)
+                    bat 'npm run test -- --run'
                 }
             }
         }

@@ -65,16 +65,16 @@ pipeline {
             }
         }
 
-        // 🔥 FIXED UNIT TEST STAGE (Vitest correct)
+        // ✅ FINAL FIXED UNIT TEST STAGE
         stage('Unit Testing') {
             steps {
                 dir('frontend\\ecommerce-ui') {
 
-                    // Ensure vitest available
-                    bat 'npm install --save-dev vitest'
+                    // Ensure Angular testing deps
+                    bat 'npm install --save-dev karma karma-chrome-launcher karma-jasmine jasmine-core @angular-devkit/build-angular'
 
-                    // Run tests (CI mode)
-                    bat 'npx vitest run'
+                    // Run tests in CI mode
+                    bat 'npm run test -- --watch=false --browsers=ChromeHeadless'
                 }
             }
         }

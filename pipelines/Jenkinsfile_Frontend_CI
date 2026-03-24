@@ -56,7 +56,7 @@ pipeline {
                             -Dsonar.projectKey=%SONAR_PROJECT_KEY% ^
                             -Dsonar.sources=. ^
                             -Dsonar.host.url=%SONAR_HOST_URL% ^
-                            -Dsonar.login=%SONAR_TOKEN% ^
+                            -Dsonar.token=%SONAR_TOKEN% ^
                             -Dsonar.exclusions=**/node_modules/**,**/dist/**
                             """
                         }
@@ -65,16 +65,16 @@ pipeline {
             }
         }
 
-        // ✅ FIXED UNIT TEST STAGE (Vitest compatible)
+        // 🔥 FIXED UNIT TEST STAGE (Vitest correct)
         stage('Unit Testing') {
             steps {
                 dir('frontend\\ecommerce-ui') {
 
-                    // Ensure vitest installed (safe fallback)
-                    bat 'npm install'
+                    // Ensure vitest available
+                    bat 'npm install --save-dev vitest'
 
-                    // Run tests (non-interactive mode)
-                    bat 'npm run test -- --watch=false --browsers=ChromeHeadless'
+                    // Run tests (CI mode)
+                    bat 'npx vitest run'
                 }
             }
         }

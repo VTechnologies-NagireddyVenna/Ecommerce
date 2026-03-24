@@ -74,7 +74,6 @@ pipeline {
             }
         }
 
-        // 🔥 FAST PIPELINE (skip waiting)
         stage('Quality Gate') {
             steps {
                 echo "Skipping Quality Gate wait (handled in Sonar UI)"
@@ -111,11 +110,11 @@ pipeline {
 
         stage('Upload to JFrog') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'artifactory-creds', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                withCredentials([usernamePassword(credentialsId: 'artifactory-creds', usernameVariable: 'ART_USER', passwordVariable: 'ART_PASS')]) {
 
                     bat '''
-                    curl.exe -u %USER%:%PASS% -T %ZIP_NAME% %ARTIFACTORY_URL%/%ZIP_NAME%
-                    curl.exe -u %USER%:%PASS% -T %ZIP_NAME% %ARTIFACTORY_URL%/latest.zip
+                    curl.exe -u %ART_USER%:%ART_PASS% -T %ZIP_NAME% %ARTIFACTORY_URL%/%ZIP_NAME%
+                    curl.exe -u %ART_USER%:%ART_PASS% -T %ZIP_NAME% %ARTIFACTORY_URL%/latest.zip
                     '''
                 }
             }

@@ -52,43 +52,20 @@ pipeline {
     }
 
     environment {
-        // ===============================
-        // Artifact Source
-        // ===============================
         JFROG_URL       = "http://192.168.56.1:8082/artifactory/ecommerce-backend"
-
-        // ===============================
-        // Temporary Working Directory
-        // ===============================
         TEMP_PATH       = "C:\\temp\\backend-deploy"
 
-        // ===============================
-        // IIS Backend Physical Paths
-        // ===============================
         BLUE_PATH       = "C:\\inetpub\\ecommerce-api-blue"
         GREEN_PATH      = "C:\\inetpub\\ecommerce-api-green"
 
-        // ===============================
-        // IIS Site Names
-        // ===============================
         BLUE_SITE       = "ecommerce-api-blue"
         GREEN_SITE      = "ecommerce-api-green"
         PROXY_SITE      = "ecommerce-main"
 
-        // ===============================
-        // Backend Ports
-        // ===============================
         BLUE_PORT       = "8091"
         GREEN_PORT      = "8092"
 
-        // ===============================
-        // Proxy web.config Path
-        // ===============================
         PROXY_CONFIG    = "C:\\inetpub\\ecommerce-proxy\\web.config"
-
-        // ===============================
-        // Auto-generated deploy context file
-        // ===============================
         DEPLOY_ENV_FILE = "deploy-env.bat"
     }
 
@@ -151,7 +128,6 @@ set DEPLOY_PORT=$deployPort
                 Write-Host "Idle Backend Slot to Deploy : $idleSlot ($deployPort)"
                 Write-Host "Deployment Path             : $deployPath"
                 Write-Host "Deployment Site             : $deploySite"
-                Write-Host "Deployment Env File         : $envFile"
                 Write-Host "=============================================="
                 '''
             }
@@ -197,14 +173,34 @@ set DEPLOY_PORT=$deployPort
             }
         }
 
-        stage('Deploy to Idle Slot (Clean Deploy)') {
+        stage('Stop Idle Backend Site') {
             steps {
                 powershell '''
                 $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
 
-                if (-not (Test-Path $envFile)) {
-                    throw "Deploy env file not found: $envFile"
+                $deploySite = (Get-Content $envFile | Where-Object { $_ -match '^set DEPLOY_SITE=' }) -replace '^set DEPLOY_SITE=', ''
+
+                if ([string]::IsNullOrWhiteSpace($deploySite)) {
+                    throw "DEPLOY_SITE not found in deploy env file."
                 }
+
+                Import-Module WebAdministration
+
+                if (Test-Path "IIS:\\Sites\\$deploySite") {
+                    Stop-Website -Name $deploySite -ErrorAction SilentlyContinue
+                    Start-Sleep -Seconds 3
+                    Write-Host "Stopped IIS Site: $deploySite"
+                } else {
+                    throw "IIS Site not found: $deploySite"
+                }
+                '''
+            }
+        }
+
+        stage('Deploy to Idle Slot (Clean Deploy)') {
+            steps {
+                powershell '''
+                $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
 
                 $deployPath = (Get-Content $envFile | Where-Object { $_ -match '^set DEPLOY_PATH=' }) -replace '^set DEPLOY_PATH=', ''
 
@@ -221,16 +217,12 @@ set DEPLOY_PORT=$deployPort
                 }
 
                 # Preserve only logs
-                $preserve = @(
-                    "logs"
-                )
+                $preserve = @("logs")
 
-                # Remove old deployment files except preserved ones
                 Get-ChildItem -Path $deployPath -Force | Where-Object {
                     $preserve -notcontains $_.Name
                 } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-                # Copy fresh published files
                 Copy-Item "$env:TEMP_PATH\\extracted\\*" -Destination $deployPath -Recurse -Force
 
                 Write-Host "Fresh deployment copied successfully."
@@ -243,10 +235,6 @@ set DEPLOY_PORT=$deployPort
                 powershell '''
                 $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
 
-                if (-not (Test-Path $envFile)) {
-                    throw "Deploy env file not found: $envFile"
-                }
-
                 $deploySite = (Get-Content $envFile | Where-Object { $_ -match '^set DEPLOY_SITE=' }) -replace '^set DEPLOY_SITE=', ''
 
                 if ([string]::IsNullOrWhiteSpace($deploySite)) {
@@ -255,13 +243,10 @@ set DEPLOY_PORT=$deployPort
 
                 Import-Module WebAdministration
 
-                $site = Get-Item "IIS:\\Sites\\$deploySite" -ErrorAction SilentlyContinue
-                if (-not $site) {
-                    throw "IIS Site not found: $deploySite"
-                }
+                Start-Website -Name $deploySite
+                Start-Sleep -Seconds 5
 
-                Restart-WebItem "IIS:\\Sites\\$deploySite"
-                Write-Host "Restarted IIS Site: $deploySite"
+                Write-Host "Started IIS Site: $deploySite"
                 '''
             }
         }
@@ -270,10 +255,6 @@ set DEPLOY_PORT=$deployPort
             steps {
                 powershell '''
                 $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
-
-                if (-not (Test-Path $envFile)) {
-                    throw "Deploy env file not found: $envFile"
-                }
 
                 $deployPort = (Get-Content $envFile | Where-Object { $_ -match '^set DEPLOY_PORT=' }) -replace '^set DEPLOY_PORT=', ''
 
@@ -313,10 +294,6 @@ set DEPLOY_PORT=$deployPort
             steps {
                 powershell '''
                 $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
-
-                if (-not (Test-Path $envFile)) {
-                    throw "Deploy env file not found: $envFile"
-                }
 
                 $currentPort = (Get-Content $envFile | Where-Object { $_ -match '^set CURRENT_ACTIVE_PORT=' }) -replace '^set CURRENT_ACTIVE_PORT=', ''
                 $deployPort  = (Get-Content $envFile | Where-Object { $_ -match '^set DEPLOY_PORT=' }) -replace '^set DEPLOY_PORT=', ''

@@ -133,29 +133,22 @@ logs
                         $proxyFile = "$env:PROXY_CONFIG"
 
                         if (-not (Test-Path $proxyFile)) {
-                            Write-Error "Proxy config not found: $proxyFile"
-                            exit 1
+                            throw "Proxy config not found: $proxyFile"
                         }
 
                         $content = Get-Content $proxyFile -Raw
 
-                        Write-Host "Checking proxy config for active backend port..."
-
-                        if ($content -match '8091') {
-                            Write-Output "8091"
-                        }
-                        elseif ($content -match '8092') {
-                            Write-Output "8092"
+                        if ($content -match 'localhost:(8091|8092)/api') {
+                            $matches[1]
                         }
                         else {
-                            Write-Error "Could not find active backend port (8091/8092) in proxy config."
-                            exit 1
+                            throw "Could not find active backend port (8091/8092) in proxy config."
                         }
                         ''',
                         returnStdout: true
                     ).trim()
 
-                    if (!activePort) {
+                    if (!activePort?.trim()) {
                         error "❌ Active backend port detection returned empty value."
                     }
 
@@ -325,11 +318,11 @@ logs
 
                 $content = Get-Content $file -Raw
 
-                if ($content -notmatch $oldPort) {
-                    throw "Old active port $oldPort not found in proxy config."
+                if ($content -notmatch "localhost:$oldPort/api") {
+                    throw "Old active backend port $oldPort not found in proxy config."
                 }
 
-                $updated = $content -replace "localhost:$oldPort", "localhost:$newPort"
+                $updated = $content -replace "localhost:$oldPort/api", "localhost:$newPort/api"
 
                 Set-Content -Path $file -Value $updated -Encoding UTF8
 

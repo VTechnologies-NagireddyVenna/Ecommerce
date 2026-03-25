@@ -55,44 +55,44 @@ pipeline {
         // ===============================
         // Artifact Source
         // ===============================
-        JFROG_URL    = "http://192.168.56.1:8082/artifactory/ecommerce-backend"
+        JFROG_URL       = "http://192.168.56.1:8082/artifactory/ecommerce-backend"
 
         // ===============================
         // Temporary Working Directory
         // ===============================
-        TEMP_PATH    = "C:\\temp\\backend-deploy"
+        TEMP_PATH       = "C:\\temp\\backend-deploy"
 
         // ===============================
         // IIS Backend Physical Paths
         // ===============================
-        BLUE_PATH    = "C:\\inetpub\\ecommerce-api-blue"
-        GREEN_PATH   = "C:\\inetpub\\ecommerce-api-green"
+        BLUE_PATH       = "C:\\inetpub\\ecommerce-api-blue"
+        GREEN_PATH      = "C:\\inetpub\\ecommerce-api-green"
 
         // ===============================
         // IIS Site Names
         // ===============================
-        BLUE_SITE    = "ecommerce-api-blue"
-        GREEN_SITE   = "ecommerce-api-green"
-        PROXY_SITE   = "ecommerce-main"
+        BLUE_SITE       = "ecommerce-api-blue"
+        GREEN_SITE      = "ecommerce-api-green"
+        PROXY_SITE      = "ecommerce-main"
 
         // ===============================
         // Backend Ports
         // ===============================
-        BLUE_PORT    = "8091"
-        GREEN_PORT   = "8092"
+        BLUE_PORT       = "8091"
+        GREEN_PORT      = "8092"
 
         // ===============================
         // Proxy web.config Path
         // ===============================
-        PROXY_CONFIG = "C:\\inetpub\\ecommerce-proxy\\web.config"
+        PROXY_CONFIG    = "C:\\inetpub\\ecommerce-proxy\\web.config"
 
         // ===============================
-        // Exclude File (to preserve configs)
+        // Exclude File (preserve configs)
         // ===============================
-        EXCLUDE_FILE = "exclude.txt"
+        EXCLUDE_FILE    = "exclude.txt"
 
         // ===============================
-        // Auto-generated deployment env file
+        // Auto-generated deploy context file
         // ===============================
         DEPLOY_ENV_FILE = "deploy-env.bat"
     }
@@ -176,8 +176,6 @@ set DEPLOY_PORT=$deployPort
             steps {
                 withCredentials([usernamePassword(credentialsId: 'artifactory-creds', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
                     bat '''
-                    call "%DEPLOY_ENV_FILE%"
-
                     curl.exe -u %USER%:%PASS% -L -o "%TEMP_PATH%\\backend.zip" "%JFROG_URL%/latest.zip"
 
                     if not exist "%TEMP_PATH%\\backend.zip" (
@@ -192,13 +190,20 @@ set DEPLOY_PORT=$deployPort
         stage('Extract Artifact') {
             steps {
                 powershell '''
-                if (Test-Path "$env:TEMP_PATH\\extracted") {
-                    Remove-Item "$env:TEMP_PATH\\extracted" -Recurse -Force
+                $zipPath = "$env:TEMP_PATH\\backend.zip"
+                $extractPath = "$env:TEMP_PATH\\extracted"
+
+                if (-not (Test-Path $zipPath)) {
+                    throw "Artifact zip not found: $zipPath"
                 }
 
-                Expand-Archive -Path "$env:TEMP_PATH\\backend.zip" -DestinationPath "$env:TEMP_PATH\\extracted" -Force
+                if (Test-Path $extractPath) {
+                    Remove-Item $extractPath -Recurse -Force
+                }
 
-                if (-not (Test-Path "$env:TEMP_PATH\\extracted")) {
+                Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+                if (-not (Test-Path $extractPath)) {
                     throw "Artifact extraction failed."
                 }
 
@@ -233,7 +238,12 @@ set DEPLOY_PORT=$deployPort
             steps {
                 powershell '''
                 $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
-                cmd /c "call `"$envFile`" && powershell -NoProfile -Command `"Import-Module WebAdministration; Restart-WebItem 'IIS:\\Sites\\%DEPLOY_SITE%'`""
+
+                if (-not (Test-Path $envFile)) {
+                    throw "Deploy env file not found: $envFile"
+                }
+
+                cmd /c "call `"$envFile`" && powershell -NoProfile -ExecutionPolicy Bypass -Command `"Import-Module WebAdministration; if (-not (Get-Item 'IIS:\\Sites\\%DEPLOY_SITE%' -ErrorAction SilentlyContinue)) { throw 'IIS Site not found: %DEPLOY_SITE%' }; Restart-WebItem 'IIS:\\Sites\\%DEPLOY_SITE%'; Write-Host 'Restarted IIS Site: %DEPLOY_SITE%'`""
                 '''
             }
         }
@@ -243,25 +253,30 @@ set DEPLOY_PORT=$deployPort
                 powershell '''
                 $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
 
-                cmd /c "call `"$envFile`" && powershell -NoProfile -Command ^
-                `$maxRetries = 10; ^
-                `$retryDelay = 5; ^
-                `$url = 'http://localhost:%DEPLOY_PORT%/swagger'; ^
-                `$success = `$false; ^
-                for (`$i=1; `$i -le `$maxRetries; `$i++) { ^
+                if (-not (Test-Path $envFile)) {
+                    throw "Deploy env file not found: $envFile"
+                }
+
+                cmd /c "call `"$envFile`" && powershell -NoProfile -ExecutionPolicy Bypass -Command `" ^
+                $maxRetries = 10; ^
+                $retryDelay = 5; ^
+                $url = 'http://localhost:%DEPLOY_PORT%/swagger'; ^
+                $success = $false; ^
+                Write-Host ('Running health check on ' + $url); ^
+                for ($i=1; $i -le $maxRetries; $i++) { ^
                     try { ^
-                        `$response = Invoke-WebRequest -Uri `$url -UseBasicParsing -TimeoutSec 15; ^
-                        if (`$response.StatusCode -eq 200) { ^
+                        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15; ^
+                        if ($response.StatusCode -eq 200) { ^
                             Write-Host 'Health check passed'; ^
-                            `$success = `$true; ^
+                            $success = $true; ^
                             break; ^
                         } ^
                     } catch { ^
-                        Write-Host ('Attempt ' + `$i + ' failed. Retrying in ' + `$retryDelay + ' seconds...'); ^
-                        Start-Sleep -Seconds `$retryDelay; ^
+                        Write-Host ('Attempt ' + $i + ' failed. Retrying in ' + $retryDelay + ' seconds...'); ^
+                        Start-Sleep -Seconds $retryDelay; ^
                     } ^
                 } ^
-                if (-not `$success) { throw 'Health check failed after retries.' }`""
+                if (-not $success) { throw 'Health check failed after retries.' }`""
                 '''
             }
         }
@@ -271,11 +286,17 @@ set DEPLOY_PORT=$deployPort
                 powershell '''
                 $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
 
-                cmd /c "call `"$envFile`" && powershell -NoProfile -Command ^
-                `$file = '%PROXY_CONFIG%'; ^
-                `$content = Get-Content `$file -Raw; ^
-                `$updated = `$content -replace 'localhost:%CURRENT_ACTIVE_PORT%/api', 'localhost:%DEPLOY_PORT%/api'; ^
-                Set-Content -Path `$file -Value `$updated -Encoding UTF8; ^
+                if (-not (Test-Path $envFile)) {
+                    throw "Deploy env file not found: $envFile"
+                }
+
+                cmd /c "call `"$envFile`" && powershell -NoProfile -ExecutionPolicy Bypass -Command `" ^
+                $file = '%PROXY_CONFIG%'; ^
+                if (-not (Test-Path $file)) { throw 'Proxy config not found: ' + $file }; ^
+                $content = Get-Content $file -Raw; ^
+                if ($content -notmatch 'localhost:%CURRENT_ACTIVE_PORT%/api') { throw 'Current active port not found in proxy config.' }; ^
+                $updated = $content -replace 'localhost:%CURRENT_ACTIVE_PORT%/api', 'localhost:%DEPLOY_PORT%/api'; ^
+                Set-Content -Path $file -Value $updated -Encoding UTF8; ^
                 Write-Host 'Backend proxy switched successfully'`""
                 '''
             }

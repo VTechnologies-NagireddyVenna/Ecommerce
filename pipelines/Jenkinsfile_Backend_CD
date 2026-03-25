@@ -51,63 +51,45 @@ pipeline {
         timestamps()
     }
 
-    parameters {
-        choice(
-            name: 'CURRENT_ACTIVE_SLOT',
-            choices: ['BLUE', 'GREEN'],
-            description: 'Select the currently active backend slot from proxy web.config'
-        )
-    }
-
     environment {
         // ===============================
         // Artifact Source
         // ===============================
-        JFROG_URL          = "http://192.168.56.1:8082/artifactory/ecommerce-backend"
+        JFROG_URL   = "http://192.168.56.1:8082/artifactory/ecommerce-backend"
 
         // ===============================
         // Temporary Working Directory
         // ===============================
-        TEMP_PATH          = "C:\\temp\\backend-deploy"
+        TEMP_PATH   = "C:\\temp\\backend-deploy"
 
         // ===============================
         // IIS Backend Physical Paths
         // ===============================
-        BLUE_PATH          = "C:\\inetpub\\ecommerce-api-blue"
-        GREEN_PATH         = "C:\\inetpub\\ecommerce-api-green"
+        BLUE_PATH   = "C:\\inetpub\\ecommerce-api-blue"
+        GREEN_PATH  = "C:\\inetpub\\ecommerce-api-green"
 
         // ===============================
         // IIS Site Names
         // ===============================
-        BLUE_SITE          = "ecommerce-api-blue"
-        GREEN_SITE         = "ecommerce-api-green"
-        PROXY_SITE         = "ecommerce-main"
+        BLUE_SITE   = "ecommerce-api-blue"
+        GREEN_SITE  = "ecommerce-api-green"
+        PROXY_SITE  = "ecommerce-main"
 
         // ===============================
         // Backend Ports
         // ===============================
-        BLUE_PORT          = "8091"
-        GREEN_PORT         = "8092"
+        BLUE_PORT   = "8091"
+        GREEN_PORT  = "8092"
 
         // ===============================
         // Proxy web.config Path
         // ===============================
-        PROXY_CONFIG       = "C:\\inetpub\\ecommerce-proxy\\web.config"
+        PROXY_CONFIG = "C:\\inetpub\\ecommerce-proxy\\web.config"
 
         // ===============================
         // Exclude File (to preserve configs)
         // ===============================
-        EXCLUDE_FILE       = "exclude.txt"
-
-        // ===============================
-        // Runtime Variables
-        // ===============================
-        ACTIVE_SLOT         = ""
-        IDLE_SLOT           = ""
-        DEPLOY_PATH         = ""
-        DEPLOY_SITE         = ""
-        DEPLOY_PORT         = ""
-        CURRENT_ACTIVE_PORT = ""
+        EXCLUDE_FILE = "exclude.txt"
     }
 
     stages {
@@ -133,30 +115,18 @@ logs
             }
         }
 
-        stage('Resolve Deployment Target') {
+        stage('Set Deployment Target') {
             steps {
                 script {
-                    env.ACTIVE_SLOT = params.CURRENT_ACTIVE_SLOT
+                    // CURRENT ACTIVE = BLUE (from proxy config)
+                    env.ACTIVE_SLOT         = "BLUE"
+                    env.CURRENT_ACTIVE_PORT = env.BLUE_PORT
 
-                    if (params.CURRENT_ACTIVE_SLOT == "BLUE") {
-                        env.CURRENT_ACTIVE_PORT = env.BLUE_PORT
-                        env.IDLE_SLOT   = "GREEN"
-                        env.DEPLOY_PATH = env.GREEN_PATH
-                        env.DEPLOY_SITE = env.GREEN_SITE
-                        env.DEPLOY_PORT = env.GREEN_PORT
-                    } else if (params.CURRENT_ACTIVE_SLOT == "GREEN") {
-                        env.CURRENT_ACTIVE_PORT = env.GREEN_PORT
-                        env.IDLE_SLOT   = "BLUE"
-                        env.DEPLOY_PATH = env.BLUE_PATH
-                        env.DEPLOY_SITE = env.BLUE_SITE
-                        env.DEPLOY_PORT = env.BLUE_PORT
-                    } else {
-                        error "❌ Invalid CURRENT_ACTIVE_SLOT selected."
-                    }
-
-                    if (!env.DEPLOY_PATH?.trim() || !env.DEPLOY_SITE?.trim() || !env.DEPLOY_PORT?.trim()) {
-                        error "❌ Deployment target variables are empty. Stopping pipeline."
-                    }
+                    // DEPLOY TARGET = GREEN
+                    env.IDLE_SLOT   = "GREEN"
+                    env.DEPLOY_PATH = env.GREEN_PATH
+                    env.DEPLOY_SITE = env.GREEN_SITE
+                    env.DEPLOY_PORT = env.GREEN_PORT
 
                     echo "=============================================="
                     echo "Current Active Backend Slot : ${env.ACTIVE_SLOT} (${env.CURRENT_ACTIVE_PORT})"
@@ -201,18 +171,13 @@ logs
             }
         }
 
-        stage('Deploy to Idle Slot (Preserve Configs)') {
+        stage('Deploy to Green Slot (Preserve Configs)') {
             steps {
                 bat '''
                 echo ==============================================
                 echo Deploying to idle backend slot: %IDLE_SLOT%
                 echo Target Path: %DEPLOY_PATH%
                 echo ==============================================
-
-                if "%DEPLOY_PATH%"=="" (
-                    echo DEPLOY_PATH is empty
-                    exit /b 1
-                )
 
                 if not exist "%DEPLOY_PATH%" mkdir "%DEPLOY_PATH%"
 
@@ -226,14 +191,10 @@ logs
             }
         }
 
-        stage('Restart Idle Backend Site') {
+        stage('Restart Green Backend Site') {
             steps {
                 powershell '''
                 $siteName = "$env:DEPLOY_SITE"
-
-                if ([string]::IsNullOrWhiteSpace($siteName)) {
-                    throw "DEPLOY_SITE is empty."
-                }
 
                 Import-Module WebAdministration
 
@@ -248,18 +209,12 @@ logs
             }
         }
 
-        stage('Health Check Idle Slot') {
+        stage('Health Check Green Slot') {
             steps {
                 powershell '''
-                $port = "$env:DEPLOY_PORT"
-
-                if ([string]::IsNullOrWhiteSpace($port)) {
-                    throw "DEPLOY_PORT is empty."
-                }
-
                 $maxRetries = 10
                 $retryDelay = 5
-                $url = "http://localhost:$port/swagger"
+                $url = "http://localhost:$env:DEPLOY_PORT/swagger"
                 $success = $false
 
                 Write-Host "Running health check on $url"
@@ -289,28 +244,13 @@ logs
             steps {
                 powershell '''
                 $file = "$env:PROXY_CONFIG"
-                $oldPort = "$env:CURRENT_ACTIVE_PORT"
-                $newPort = "$env:DEPLOY_PORT"
-
-                if (-not (Test-Path $file)) {
-                    throw "Proxy config file not found: $file"
-                }
-
-                if ([string]::IsNullOrWhiteSpace($oldPort) -or [string]::IsNullOrWhiteSpace($newPort)) {
-                    throw "CURRENT_ACTIVE_PORT or DEPLOY_PORT is empty."
-                }
-
                 $content = Get-Content $file -Raw
 
-                if ($content -notmatch "localhost:$oldPort/api") {
-                    throw "Old active backend port $oldPort not found in proxy config."
-                }
-
-                $updated = $content -replace "localhost:$oldPort/api", "localhost:$newPort/api"
+                $updated = $content -replace "localhost:8091/api", "localhost:8092/api"
 
                 Set-Content -Path $file -Value $updated -Encoding UTF8
 
-                Write-Host "Backend proxy switched from $oldPort to $newPort"
+                Write-Host "Backend proxy switched from 8091 to 8092"
                 '''
             }
         }
@@ -318,21 +258,15 @@ logs
         stage('Restart Proxy Site') {
             steps {
                 powershell '''
-                $siteName = "$env:PROXY_SITE"
-
-                if ([string]::IsNullOrWhiteSpace($siteName)) {
-                    throw "PROXY_SITE is empty."
-                }
-
                 Import-Module WebAdministration
 
-                $site = Get-Item "IIS:\\Sites\\$siteName" -ErrorAction SilentlyContinue
+                $site = Get-Item "IIS:\\Sites\\$env:PROXY_SITE" -ErrorAction SilentlyContinue
                 if (-not $site) {
-                    throw "Proxy IIS Site not found: $siteName"
+                    throw "Proxy IIS Site not found: $env:PROXY_SITE"
                 }
 
-                Restart-WebItem "IIS:\\Sites\\$siteName"
-                Write-Host "Restarted Proxy IIS Site: $siteName"
+                Restart-WebItem "IIS:\\Sites\\$env:PROXY_SITE"
+                Write-Host "Restarted Proxy IIS Site: $env:PROXY_SITE"
                 '''
             }
         }
@@ -373,7 +307,7 @@ logs
         success {
             echo "=============================================="
             echo "Backend Blue-Green Deployment SUCCESS"
-            echo "Active backend slot is now: ${env.IDLE_SLOT} (${env.DEPLOY_PORT})"
+            echo "Active backend slot is now: GREEN (8092)"
             echo "=============================================="
         }
 
@@ -387,10 +321,10 @@ logs
         always {
             echo "=============================================="
             echo "Deployment Summary"
-            echo "Previous Active Slot : ${env.ACTIVE_SLOT} (${env.CURRENT_ACTIVE_PORT})"
-            echo "Deployed Idle Slot   : ${env.IDLE_SLOT} (${env.DEPLOY_PORT})"
-            echo "Target IIS Site      : ${env.DEPLOY_SITE}"
-            echo "Target Path          : ${env.DEPLOY_PATH}"
+            echo "Previous Active Slot : BLUE (8091)"
+            echo "Deployed Idle Slot   : GREEN (8092)"
+            echo "Target IIS Site      : ecommerce-api-green"
+            echo "Target Path          : C:\\inetpub\\ecommerce-api-green"
             echo "=============================================="
         }
     }

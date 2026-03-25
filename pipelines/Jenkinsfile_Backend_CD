@@ -368,7 +368,7 @@ set DEPLOY_PORT=$deployPort
         stage('Final Proxy Validation') {
             steps {
                 powershell '''
-                $url = "http://localhost:8090/swagger/index.html"
+                $url = "http://localhost:8090/api/Product"
 
                 Write-Host "Validating backend through proxy: $url"
 
@@ -376,6 +376,7 @@ set DEPLOY_PORT=$deployPort
                     $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20
                     if ($response.StatusCode -eq 200) {
                         Write-Host "Proxy validation successful"
+                        Write-Host "Backend is reachable through proxy."
                     } else {
                         throw "Proxy validation failed with status code: $($response.StatusCode)"
                     }

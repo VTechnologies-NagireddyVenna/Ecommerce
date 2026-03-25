@@ -52,51 +52,41 @@ pipeline {
         // ===============================
         // Artifact Source
         // ===============================
-        JFROG_URL           = "http://192.168.56.1:8082/artifactory/ecommerce-frontend"
+        JFROG_URL       = "http://192.168.56.1:8082/artifactory/ecommerce-frontend"
 
         // ===============================
         // Temporary Working Directory
         // ===============================
-        TEMP_PATH           = "C:\\temp\\frontend-deploy"
+        TEMP_PATH       = "C:\\temp\\frontend-deploy"
 
         // ===============================
         // IIS Frontend Physical Paths
         // ===============================
-        BLUE_PATH           = "C:\\inetpub\\ecommerce-ui-blue"
-        GREEN_PATH          = "C:\\inetpub\\ecommerce-ui-green"
+        BLUE_PATH       = "C:\\inetpub\\ecommerce-ui-blue"
+        GREEN_PATH      = "C:\\inetpub\\ecommerce-ui-green"
 
         // ===============================
         // IIS Site Names
         // ===============================
-        BLUE_SITE           = "ecommerce-ui-blue"
-        GREEN_SITE          = "ecommerce-ui-green"
-        PROXY_SITE          = "ecommerce-main"
+        BLUE_SITE       = "ecommerce-ui-blue"
+        GREEN_SITE      = "ecommerce-ui-green"
+        PROXY_SITE      = "ecommerce-main"
 
         // ===============================
         // Frontend Ports
         // ===============================
-        BLUE_PORT           = "8093"
-        GREEN_PORT          = "8094"
+        BLUE_PORT       = "8093"
+        GREEN_PORT      = "8094"
 
         // ===============================
         // Proxy web.config Path
         // ===============================
-        PROXY_CONFIG        = "C:\\inetpub\\ecommerce-proxy\\web.config"
+        PROXY_CONFIG    = "C:\\inetpub\\ecommerce-proxy\\web.config"
 
         // ===============================
-        // Exclude File (to preserve configs)
+        // Auto-generated deploy context file
         // ===============================
-        EXCLUDE_FILE        = "exclude.txt"
-
-        // ===============================
-        // Runtime Variables (set dynamically)
-        // ===============================
-        ACTIVE_SLOT         = ""
-        IDLE_SLOT           = ""
-        DEPLOY_PATH         = ""
-        DEPLOY_SITE         = ""
-        DEPLOY_PORT         = ""
-        CURRENT_ACTIVE_PORT = ""
+        DEPLOY_ENV_FILE = "frontend-deploy-env.bat"
     }
 
     stages {
@@ -112,53 +102,54 @@ pipeline {
             }
         }
 
-        stage('Create Exclude File') {
-            steps {
-                writeFile file: "${env.EXCLUDE_FILE}", text: '''web.config
-'''
-            }
-        }
-
         stage('Detect Active Frontend Slot') {
             steps {
-                script {
-                    def activePort = bat(
-                        script: '''
-                        @echo off
-                        powershell -NoProfile -Command ^
-                        "$content = Get-Content '%PROXY_CONFIG%' -Raw; ^
-                        if ($content -match 'http://localhost:(8093|8094)/') { ^
-                            Write-Output $matches[1] ^
-                        }"
-                        ''',
-                        returnStdout: true
-                    ).trim()
+                powershell '''
+                $proxyFile = "$env:PROXY_CONFIG"
+                $envFile   = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
 
-                    env.CURRENT_ACTIVE_PORT = activePort
-
-                    if (activePort == env.BLUE_PORT) {
-                        env.ACTIVE_SLOT = "BLUE"
-                        env.IDLE_SLOT   = "GREEN"
-                        env.DEPLOY_PATH = env.GREEN_PATH
-                        env.DEPLOY_SITE = env.GREEN_SITE
-                        env.DEPLOY_PORT = env.GREEN_PORT
-                    } else if (activePort == env.GREEN_PORT) {
-                        env.ACTIVE_SLOT = "GREEN"
-                        env.IDLE_SLOT   = "BLUE"
-                        env.DEPLOY_PATH = env.BLUE_PATH
-                        env.DEPLOY_SITE = env.BLUE_SITE
-                        env.DEPLOY_PORT = env.BLUE_PORT
-                    } else {
-                        error "❌ Could not detect active frontend slot from proxy config."
-                    }
-
-                    echo "=============================================="
-                    echo "Current Active Frontend Slot : ${env.ACTIVE_SLOT} (${env.CURRENT_ACTIVE_PORT})"
-                    echo "Idle Frontend Slot to Deploy : ${env.IDLE_SLOT} (${env.DEPLOY_PORT})"
-                    echo "Deployment Path              : ${env.DEPLOY_PATH}"
-                    echo "Deployment Site              : ${env.DEPLOY_SITE}"
-                    echo "=============================================="
+                if (-not (Test-Path $proxyFile)) {
+                    throw "Proxy config not found: $proxyFile"
                 }
+
+                $content = Get-Content $proxyFile -Raw
+
+                if ($content -match 'localhost:8093/') {
+                    $activeSlot = "BLUE"
+                    $activePort = "8093"
+                    $idleSlot   = "GREEN"
+                    $deployPath = "$env:GREEN_PATH"
+                    $deploySite = "$env:GREEN_SITE"
+                    $deployPort = "$env:GREEN_PORT"
+                }
+                elseif ($content -match 'localhost:8094/') {
+                    $activeSlot = "GREEN"
+                    $activePort = "8094"
+                    $idleSlot   = "BLUE"
+                    $deployPath = "$env:BLUE_PATH"
+                    $deploySite = "$env:BLUE_SITE"
+                    $deployPort = "$env:BLUE_PORT"
+                }
+                else {
+                    throw "Could not detect active frontend slot from proxy config."
+                }
+
+                @"
+set ACTIVE_SLOT=$activeSlot
+set CURRENT_ACTIVE_PORT=$activePort
+set IDLE_SLOT=$idleSlot
+set DEPLOY_PATH=$deployPath
+set DEPLOY_SITE=$deploySite
+set DEPLOY_PORT=$deployPort
+"@ | Set-Content -Path $envFile -Encoding ASCII
+
+                Write-Host "=============================================="
+                Write-Host "Current Active Frontend Slot : $activeSlot ($activePort)"
+                Write-Host "Idle Frontend Slot to Deploy : $idleSlot ($deployPort)"
+                Write-Host "Deployment Path              : $deployPath"
+                Write-Host "Deployment Site              : $deploySite"
+                Write-Host "=============================================="
+                '''
             }
         }
 
@@ -166,10 +157,10 @@ pipeline {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'artifactory-creds', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
                     bat '''
-                    curl.exe -u %USER%:%PASS% -o "%TEMP_PATH%\\frontend.zip" "%JFROG_URL%/latest.zip"
+                    curl.exe -u %USER%:%PASS% -L -o "%TEMP_PATH%\\frontend.zip" "%JFROG_URL%/latest.zip"
 
                     if not exist "%TEMP_PATH%\\frontend.zip" (
-                        echo ❌ Artifact download failed
+                        echo Artifact download failed
                         exit /b 1
                     )
                     '''
@@ -179,126 +170,233 @@ pipeline {
 
         stage('Extract Artifact') {
             steps {
-                bat '''
-                powershell -NoProfile -Command "Expand-Archive -Path '%TEMP_PATH%\\frontend.zip' -DestinationPath '%TEMP_PATH%\\extracted' -Force"
+                powershell '''
+                $zipPath = "$env:TEMP_PATH\\frontend.zip"
+                $extractPath = "$env:TEMP_PATH\\extracted"
+
+                if (-not (Test-Path $zipPath)) {
+                    throw "Artifact zip not found: $zipPath"
+                }
+
+                if (Test-Path $extractPath) {
+                    Remove-Item $extractPath -Recurse -Force
+                }
+
+                Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+                if (-not (Test-Path $extractPath)) {
+                    throw "Artifact extraction failed."
+                }
+
+                Write-Host "Frontend artifact extracted successfully."
                 '''
             }
         }
 
-        stage('Deploy to Idle Slot (Preserve web.config)') {
+        stage('Stop Idle Frontend Site') {
             steps {
-                bat '''
-                echo ==============================================
-                echo Deploying to idle frontend slot: %IDLE_SLOT%
-                echo Target Path: %DEPLOY_PATH%
-                echo ==============================================
+                powershell '''
+                $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
 
-                if not exist "%DEPLOY_PATH%" mkdir "%DEPLOY_PATH%"
+                if (-not (Test-Path $envFile)) {
+                    throw "Deploy env file not found: $envFile"
+                }
 
-                REM Copy all files except protected frontend config
-                xcopy "%TEMP_PATH%\\extracted\\*" "%DEPLOY_PATH%\\" /E /H /C /I /Y /EXCLUDE:%EXCLUDE_FILE%
+                $deploySite = (Get-Content $envFile | Where-Object { $_ -match '^set DEPLOY_SITE=' }) -replace '^set DEPLOY_SITE=', ''
 
-                if errorlevel 1 (
-                    echo ❌ XCOPY deployment failed
-                    exit /b 1
-                )
+                if ([string]::IsNullOrWhiteSpace($deploySite)) {
+                    throw "DEPLOY_SITE not found in deploy env file."
+                }
+
+                Import-Module WebAdministration
+
+                if (Test-Path "IIS:\\Sites\\$deploySite") {
+                    Stop-Website -Name $deploySite -ErrorAction SilentlyContinue
+                    Start-Sleep -Seconds 3
+                    Write-Host "Stopped IIS Site: $deploySite"
+                } else {
+                    throw "IIS Site not found: $deploySite"
+                }
                 '''
             }
         }
 
-        stage('Restart Idle Frontend Site') {
+        stage('Deploy to Idle Slot (Clean Deploy)') {
             steps {
-                bat '''
-                echo Restarting IIS Site: %DEPLOY_SITE%
-                powershell -NoProfile -Command "Import-Module WebAdministration; Restart-WebItem 'IIS:\\Sites\\%DEPLOY_SITE%'"
+                powershell '''
+                $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
+
+                if (-not (Test-Path $envFile)) {
+                    throw "Deploy env file not found: $envFile"
+                }
+
+                $deployPath = (Get-Content $envFile | Where-Object { $_ -match '^set DEPLOY_PATH=' }) -replace '^set DEPLOY_PATH=', ''
+
+                if ([string]::IsNullOrWhiteSpace($deployPath)) {
+                    throw "DEPLOY_PATH not found in deploy env file."
+                }
+
+                Write-Host "=============================================="
+                Write-Host "Clean deploying to: $deployPath"
+                Write-Host "=============================================="
+
+                if (-not (Test-Path $deployPath)) {
+                    New-Item -ItemType Directory -Path $deployPath -Force | Out-Null
+                }
+
+                # Preserve only logs if present (usually frontend doesn't need preserve)
+                $preserve = @("logs")
+
+                Get-ChildItem -Path $deployPath -Force | Where-Object {
+                    $preserve -notcontains $_.Name
+                } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+                Copy-Item "$env:TEMP_PATH\\extracted\\*" -Destination $deployPath -Recurse -Force
+
+                Write-Host "Frontend files copied successfully."
+                '''
+            }
+        }
+
+        stage('Start Idle Frontend Site') {
+            steps {
+                powershell '''
+                $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
+
+                if (-not (Test-Path $envFile)) {
+                    throw "Deploy env file not found: $envFile"
+                }
+
+                $deploySite = (Get-Content $envFile | Where-Object { $_ -match '^set DEPLOY_SITE=' }) -replace '^set DEPLOY_SITE=', ''
+
+                if ([string]::IsNullOrWhiteSpace($deploySite)) {
+                    throw "DEPLOY_SITE not found in deploy env file."
+                }
+
+                Import-Module WebAdministration
+
+                Start-Website -Name $deploySite
+                Start-Sleep -Seconds 5
+
+                Write-Host "Started IIS Site: $deploySite"
                 '''
             }
         }
 
         stage('Validate Idle Frontend Slot') {
             steps {
-                bat '''
-                echo ==============================================
-                echo Validating frontend on http://localhost:%DEPLOY_PORT%
-                echo ==============================================
+                powershell '''
+                $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
 
-                powershell -NoProfile -Command ^
-                "$maxRetries = 10; ^
-                 $retryDelay = 5; ^
-                 $url = 'http://localhost:%DEPLOY_PORT%'; ^
-                 $success = $false; ^
-                 for ($i=1; $i -le $maxRetries; $i++) { ^
-                    try { ^
-                        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15; ^
-                        if ($response.StatusCode -eq 200) { ^
-                            Write-Host '✅ Frontend validation passed'; ^
-                            $success = $true; ^
-                            break; ^
-                        } ^
-                    } catch { ^
-                        Write-Host ('Attempt ' + $i + ' failed. Retrying in ' + $retryDelay + ' seconds...'); ^
-                        Start-Sleep -Seconds $retryDelay; ^
-                    } ^
-                 } ^
-                 if (-not $success) { ^
-                    Write-Error '❌ Frontend validation failed after retries'; ^
-                    exit 1; ^
-                 }"
+                if (-not (Test-Path $envFile)) {
+                    throw "Deploy env file not found: $envFile"
+                }
+
+                $deployPort = (Get-Content $envFile | Where-Object { $_ -match '^set DEPLOY_PORT=' }) -replace '^set DEPLOY_PORT=', ''
+
+                if ([string]::IsNullOrWhiteSpace($deployPort)) {
+                    throw "DEPLOY_PORT not found in deploy env file."
+                }
+
+                $maxRetries = 12
+                $retryDelay = 5
+                $url = "http://localhost:$deployPort"
+                $success = $false
+
+                Write-Host "Validating frontend on $url"
+
+                for ($i = 1; $i -le $maxRetries; $i++) {
+                    try {
+                        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20
+                        if ($response.StatusCode -eq 200) {
+                            Write-Host "Frontend validation passed"
+                            $success = $true
+                            break
+                        }
+                    } catch {
+                        Write-Host "Attempt $i failed. Retrying in $retryDelay seconds..."
+                        Start-Sleep -Seconds $retryDelay
+                    }
+                }
+
+                if (-not $success) {
+                    throw "Frontend validation failed after retries."
+                }
                 '''
             }
         }
 
         stage('Switch Frontend Traffic in Proxy') {
             steps {
-                bat '''
-                echo ==============================================
-                echo Switching frontend traffic in proxy
-                echo From: %CURRENT_ACTIVE_PORT%
-                echo To  : %DEPLOY_PORT%
-                echo ==============================================
+                powershell '''
+                $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
 
-                powershell -NoProfile -Command ^
-                "$file = '%PROXY_CONFIG%'; ^
-                 $content = Get-Content $file -Raw; ^
-                 $content = $content -replace 'http://localhost:%CURRENT_ACTIVE_PORT%/', 'http://localhost:%DEPLOY_PORT%/'; ^
-                 Set-Content -Path $file -Value $content -Encoding UTF8"
+                if (-not (Test-Path $envFile)) {
+                    throw "Deploy env file not found: $envFile"
+                }
 
-                echo ✅ Frontend proxy switch completed.
+                $currentPort = (Get-Content $envFile | Where-Object { $_ -match '^set CURRENT_ACTIVE_PORT=' }) -replace '^set CURRENT_ACTIVE_PORT=', ''
+                $deployPort  = (Get-Content $envFile | Where-Object { $_ -match '^set DEPLOY_PORT=' }) -replace '^set DEPLOY_PORT=', ''
+
+                if ([string]::IsNullOrWhiteSpace($currentPort) -or [string]::IsNullOrWhiteSpace($deployPort)) {
+                    throw "CURRENT_ACTIVE_PORT or DEPLOY_PORT missing in deploy env file."
+                }
+
+                $file = "$env:PROXY_CONFIG"
+
+                if (-not (Test-Path $file)) {
+                    throw "Proxy config not found: $file"
+                }
+
+                $content = Get-Content $file -Raw
+
+                if ($content -notmatch "localhost:$currentPort/") {
+                    throw "Current active frontend port $currentPort not found in proxy config."
+                }
+
+                $updated = $content -replace "localhost:$currentPort/", "localhost:$deployPort/"
+
+                Set-Content -Path $file -Value $updated -Encoding UTF8
+
+                Write-Host "Frontend proxy switched from $currentPort to $deployPort"
                 '''
             }
         }
 
         stage('Restart Proxy Site') {
             steps {
-                bat '''
-                echo Restarting IIS Proxy Site: %PROXY_SITE%
-                powershell -NoProfile -Command "Import-Module WebAdministration; Restart-WebItem 'IIS:\\Sites\\%PROXY_SITE%'"
+                powershell '''
+                Import-Module WebAdministration
+
+                $site = Get-Item "IIS:\\Sites\\$env:PROXY_SITE" -ErrorAction SilentlyContinue
+                if (-not $site) {
+                    throw "Proxy IIS Site not found: $env:PROXY_SITE"
+                }
+
+                Restart-WebItem "IIS:\\Sites\\$env:PROXY_SITE"
+                Write-Host "Restarted Proxy IIS Site: $env:PROXY_SITE"
                 '''
             }
         }
 
         stage('Final Proxy Validation') {
             steps {
-                bat '''
-                echo ==============================================
-                echo Validating frontend through proxy
-                echo URL: http://localhost:8090
-                echo ==============================================
+                powershell '''
+                $url = "http://localhost:8090"
 
-                powershell -NoProfile -Command ^
-                "$url = 'http://localhost:8090'; ^
-                 try { ^
-                    $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15; ^
-                    if ($response.StatusCode -eq 200) { ^
-                        Write-Host '✅ Proxy validation successful'; ^
-                    } else { ^
-                        Write-Error '❌ Proxy validation failed'; ^
-                        exit 1; ^
-                    } ^
-                 } catch { ^
-                    Write-Error '❌ Proxy validation failed'; ^
-                    exit 1; ^
-                 }"
+                Write-Host "Validating frontend through proxy: $url"
+
+                try {
+                    $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20
+                    if ($response.StatusCode -eq 200) {
+                        Write-Host "Proxy validation successful"
+                        Write-Host "Frontend is reachable through proxy."
+                    } else {
+                        throw "Proxy validation failed with status code: $($response.StatusCode)"
+                    }
+                } catch {
+                    throw "Proxy validation failed."
+                }
                 '''
             }
         }
@@ -309,6 +407,9 @@ pipeline {
                 if exist "%TEMP_PATH%" (
                     rmdir /s /q "%TEMP_PATH%"
                 )
+                if exist "%DEPLOY_ENV_FILE%" (
+                    del /f /q "%DEPLOY_ENV_FILE%"
+                )
                 '''
             }
         }
@@ -317,25 +418,19 @@ pipeline {
     post {
         success {
             echo "=============================================="
-            echo "✅ Frontend Blue-Green Deployment SUCCESS"
-            echo "🎯 Active frontend slot is now: ${env.IDLE_SLOT} (${env.DEPLOY_PORT})"
+            echo "Frontend Blue-Green Deployment SUCCESS"
             echo "=============================================="
         }
 
         failure {
             echo "=============================================="
-            echo "❌ Frontend Deployment FAILED"
-            echo "⚠️ Proxy switch is considered valid only if validation passed."
+            echo "Frontend Deployment FAILED"
             echo "=============================================="
         }
 
         always {
             echo "=============================================="
-            echo "📌 Deployment Summary"
-            echo "Previous Active Slot : ${env.ACTIVE_SLOT} (${env.CURRENT_ACTIVE_PORT})"
-            echo "Deployed Idle Slot   : ${env.IDLE_SLOT} (${env.DEPLOY_PORT})"
-            echo "Target IIS Site      : ${env.DEPLOY_SITE}"
-            echo "Target Path          : ${env.DEPLOY_PATH}"
+            echo "Frontend CD Pipeline Finished"
             echo "=============================================="
         }
     }

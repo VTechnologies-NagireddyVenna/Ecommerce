@@ -51,6 +51,14 @@ pipeline {
         timestamps()
     }
 
+    parameters {
+        choice(
+            name: 'CURRENT_ACTIVE_SLOT',
+            choices: ['BLUE', 'GREEN'],
+            description: 'Select the currently active backend slot from proxy web.config'
+        )
+    }
+
     environment {
         // ===============================
         // Artifact Source
@@ -92,7 +100,7 @@ pipeline {
         EXCLUDE_FILE       = "exclude.txt"
 
         // ===============================
-        // Runtime Variables (set dynamically)
+        // Runtime Variables
         // ===============================
         ACTIVE_SLOT         = ""
         IDLE_SLOT           = ""
@@ -125,49 +133,25 @@ logs
             }
         }
 
-        stage('Detect Active Backend Slot') {
+        stage('Resolve Deployment Target') {
             steps {
                 script {
-                    def activePort = powershell(
-                        script: '''
-                        $proxyFile = "$env:PROXY_CONFIG"
+                    env.ACTIVE_SLOT = params.CURRENT_ACTIVE_SLOT
 
-                        if (-not (Test-Path $proxyFile)) {
-                            throw "Proxy config not found: $proxyFile"
-                        }
-
-                        $content = Get-Content $proxyFile -Raw
-
-                        if ($content -match 'localhost:(8091|8092)/api') {
-                            $matches[1]
-                        }
-                        else {
-                            throw "Could not find active backend port (8091/8092) in proxy config."
-                        }
-                        ''',
-                        returnStdout: true
-                    ).trim()
-
-                    if (!activePort?.trim()) {
-                        error "❌ Active backend port detection returned empty value."
-                    }
-
-                    env.CURRENT_ACTIVE_PORT = activePort
-
-                    if (activePort == env.BLUE_PORT) {
-                        env.ACTIVE_SLOT = "BLUE"
+                    if (params.CURRENT_ACTIVE_SLOT == "BLUE") {
+                        env.CURRENT_ACTIVE_PORT = env.BLUE_PORT
                         env.IDLE_SLOT   = "GREEN"
                         env.DEPLOY_PATH = env.GREEN_PATH
                         env.DEPLOY_SITE = env.GREEN_SITE
                         env.DEPLOY_PORT = env.GREEN_PORT
-                    } else if (activePort == env.GREEN_PORT) {
-                        env.ACTIVE_SLOT = "GREEN"
+                    } else if (params.CURRENT_ACTIVE_SLOT == "GREEN") {
+                        env.CURRENT_ACTIVE_PORT = env.GREEN_PORT
                         env.IDLE_SLOT   = "BLUE"
                         env.DEPLOY_PATH = env.BLUE_PATH
                         env.DEPLOY_SITE = env.BLUE_SITE
                         env.DEPLOY_PORT = env.BLUE_PORT
                     } else {
-                        error "❌ Invalid active backend port detected: ${activePort}"
+                        error "❌ Invalid CURRENT_ACTIVE_SLOT selected."
                     }
 
                     if (!env.DEPLOY_PATH?.trim() || !env.DEPLOY_SITE?.trim() || !env.DEPLOY_PORT?.trim()) {

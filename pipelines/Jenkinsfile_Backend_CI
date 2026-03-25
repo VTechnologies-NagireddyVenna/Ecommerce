@@ -15,10 +15,19 @@ pipeline {
 
     agent { label 'deploy-agent-build' }
 
+    options {
+        skipDefaultCheckout(false)
+        timestamps()
+    }
+
     environment {
-        ARTIFACTORY_URL = "http://192.168.56.1:8082/artifactory/ecommerce-backend"
-        SONAR_HOST_URL = "http://192.168.56.1:9000"
+        ARTIFACTORY_URL  = "http://192.168.56.1:8082/artifactory/ecommerce-backend"
+        SONAR_HOST_URL   = "http://192.168.56.1:9000"
         SONAR_PROJECT_KEY = "ecommerce-backend"
+
+        SOLUTION_PATH    = "backend\\Ecommerce.sln"
+        API_PROJECT      = "backend\\src\\Ecommerce.API\\Ecommerce.API.csproj"
+        PUBLISH_DIR      = "backend\\publish"
     }
 
     stages {
@@ -29,9 +38,24 @@ pipeline {
             }
         }
 
+        stage('Clean Workspace Artifacts') {
+            steps {
+                powershell '''
+                Write-Host "Cleaning old bin/obj/publish folders..."
+
+                Get-ChildItem -Path "backend" -Recurse -Directory -Force |
+                    Where-Object { $_.Name -in @("bin","obj","publish") } |
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+                Write-Host "Clearing NuGet cache..."
+                dotnet nuget locals all --clear
+                '''
+            }
+        }
+
         stage('Restore') {
             steps {
-                bat 'dotnet restore backend\\Ecommerce.sln'
+                bat 'dotnet restore %SOLUTION_PATH%'
             }
         }
 
@@ -57,7 +81,7 @@ pipeline {
                         /d:sonar.exclusions="**/bin/**,**/obj/**"
                         """
 
-                        bat 'dotnet build backend\\Ecommerce.sln -c Release --no-restore'
+                        bat 'dotnet build %SOLUTION_PATH% -c Release --no-restore'
 
                         bat """
                         dotnet sonarscanner end ^
@@ -70,7 +94,7 @@ pipeline {
 
         stage('Unit Testing') {
             steps {
-                bat 'dotnet test backend\\Ecommerce.sln -c Release --no-build'
+                bat 'dotnet test %SOLUTION_PATH% -c Release --no-build'
             }
         }
 
@@ -82,15 +106,42 @@ pipeline {
 
         stage('Publish') {
             steps {
-                bat 'dotnet publish backend\\src\\Ecommerce.API\\Ecommerce.API.csproj -c Release -o backend\\publish --no-build'
+                bat '''
+                if exist "%PUBLISH_DIR%" rmdir /s /q "%PUBLISH_DIR%"
+                dotnet publish %API_PROJECT% -c Release -o %PUBLISH_DIR%
+                '''
             }
         }
 
-        stage('Clean Config Files') {
+        stage('Validate Publish Output') {
             steps {
-                bat '''
-                powershell Remove-Item backend\\publish\\appsettings*.json -ErrorAction SilentlyContinue
-                powershell Remove-Item backend\\publish\\web.config -ErrorAction SilentlyContinue
+                powershell '''
+                $publishDir = "$env:WORKSPACE\\backend\\publish"
+
+                if (-not (Test-Path $publishDir)) {
+                    throw "Publish directory not found: $publishDir"
+                }
+
+                Write-Host "Validating required published files..."
+
+                $requiredFiles = @(
+                    "Ecommerce.API.exe",
+                    "Ecommerce.API.dll",
+                    "Ecommerce.API.deps.json",
+                    "Ecommerce.API.runtimeconfig.json",
+                    "web.config",
+                    "appsettings.json",
+                    "Microsoft.Extensions.Logging.Abstractions.dll"
+                )
+
+                foreach ($file in $requiredFiles) {
+                    $path = Join-Path $publishDir $file
+                    if (-not (Test-Path $path)) {
+                        throw "Required publish file missing: $file"
+                    }
+                }
+
+                Write-Host "Publish validation successful."
                 '''
             }
         }
@@ -103,6 +154,7 @@ pipeline {
                 }
 
                 bat '''
+                if exist "%ZIP_NAME%" del /f /q "%ZIP_NAME%"
                 powershell Compress-Archive -Path backend\\publish\\* -DestinationPath %ZIP_NAME%
                 '''
             }
@@ -126,10 +178,14 @@ pipeline {
             archiveArtifacts artifacts: 'trivy-report.txt', allowEmptyArchive: true
         }
         success {
+            echo "=============================================="
             echo "✅ Backend CI Pipeline SUCCESS"
+            echo "=============================================="
         }
         failure {
+            echo "=============================================="
             echo "❌ Backend CI Pipeline FAILED"
+            echo "=============================================="
         }
     }
 }

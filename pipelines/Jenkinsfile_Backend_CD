@@ -197,7 +197,7 @@ set DEPLOY_PORT=$deployPort
             }
         }
 
-        stage('Deploy to Idle Slot (Clean Deploy, Preserve Configs)') {
+        stage('Deploy to Idle Slot (Clean Deploy)') {
             steps {
                 powershell '''
                 $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
@@ -220,11 +220,8 @@ set DEPLOY_PORT=$deployPort
                     New-Item -ItemType Directory -Path $deployPath -Force | Out-Null
                 }
 
-                # Preserve these files/folders
+                # Preserve only logs
                 $preserve = @(
-                    "web.config",
-                    "appsettings.json",
-                    "appsettings.Production.json",
                     "logs"
                 )
 

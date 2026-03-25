@@ -1,0 +1,342 @@
+/*
+===========================================================
+Ecommerce Frontend CD Pipeline (Blue-Green IIS Deployment)
+===========================================================
+
+📌 What this Jenkinsfile does:
+
+1. Downloads latest frontend artifact (latest.zip) from JFrog
+2. Detects which frontend slot is currently ACTIVE using proxy config
+   - BLUE  = Port 8093
+   - GREEN = Port 8094
+3. Chooses the IDLE slot automatically for safe deployment
+4. Extracts the ZIP into a temporary deployment folder
+5. Deploys files only to the idle frontend slot
+6. Preserves important server-side files/folders:
+   - web.config
+7. Restarts only the deployed IIS frontend site
+8. Runs UI validation on deployed idle slot
+9. If validation passes:
+   - Updates proxy routing (ecommerce-main)
+   - Switches frontend traffic to newly deployed slot
+10. Restarts proxy site to apply traffic switch
+11. Validates deployment through proxy
+12. Cleans up temporary files after deployment
+
+🎯 Goal:
+Safe Zero-Downtime Frontend Deployment using Blue-Green strategy on IIS.
+
+🧱 IIS Frontend Sites:
+- ecommerce-ui-blue  → Port 8093 → C:\inetpub\ecommerce-ui-blue
+- ecommerce-ui-green → Port 8094 → C:\inetpub\ecommerce-ui-green
+
+🌐 Main Proxy Site:
+- ecommerce-main → Port 8090 → C:\inetpub\ecommerce-proxy
+
+📦 Artifact Source:
+- JFrog Repo: ecommerce-frontend
+- File: latest.zip
+
+===========================================================
+*/
+
+pipeline {
+    agent { label 'deploy-agent-deploy' }
+
+    options {
+        skipDefaultCheckout(true)
+        timestamps()
+    }
+
+    environment {
+        // ===============================
+        // Artifact Source
+        // ===============================
+        JFROG_URL           = "http://192.168.56.1:8082/artifactory/ecommerce-frontend"
+
+        // ===============================
+        // Temporary Working Directory
+        // ===============================
+        TEMP_PATH           = "C:\\temp\\frontend-deploy"
+
+        // ===============================
+        // IIS Frontend Physical Paths
+        // ===============================
+        BLUE_PATH           = "C:\\inetpub\\ecommerce-ui-blue"
+        GREEN_PATH          = "C:\\inetpub\\ecommerce-ui-green"
+
+        // ===============================
+        // IIS Site Names
+        // ===============================
+        BLUE_SITE           = "ecommerce-ui-blue"
+        GREEN_SITE          = "ecommerce-ui-green"
+        PROXY_SITE          = "ecommerce-main"
+
+        // ===============================
+        // Frontend Ports
+        // ===============================
+        BLUE_PORT           = "8093"
+        GREEN_PORT          = "8094"
+
+        // ===============================
+        // Proxy web.config Path
+        // ===============================
+        PROXY_CONFIG        = "C:\\inetpub\\ecommerce-proxy\\web.config"
+
+        // ===============================
+        // Exclude File (to preserve configs)
+        // ===============================
+        EXCLUDE_FILE        = "exclude.txt"
+
+        // ===============================
+        // Runtime Variables (set dynamically)
+        // ===============================
+        ACTIVE_SLOT         = ""
+        IDLE_SLOT           = ""
+        DEPLOY_PATH         = ""
+        DEPLOY_SITE         = ""
+        DEPLOY_PORT         = ""
+        CURRENT_ACTIVE_PORT = ""
+    }
+
+    stages {
+
+        stage('Prepare Temp Directory') {
+            steps {
+                bat '''
+                if exist "%TEMP_PATH%" (
+                    rmdir /s /q "%TEMP_PATH%"
+                )
+                mkdir "%TEMP_PATH%"
+                '''
+            }
+        }
+
+        stage('Create Exclude File') {
+            steps {
+                writeFile file: "${env.EXCLUDE_FILE}", text: '''web.config
+'''
+            }
+        }
+
+        stage('Detect Active Frontend Slot') {
+            steps {
+                script {
+                    def activePort = bat(
+                        script: '''
+                        @echo off
+                        powershell -NoProfile -Command ^
+                        "$content = Get-Content '%PROXY_CONFIG%' -Raw; ^
+                        if ($content -match 'http://localhost:(8093|8094)/') { ^
+                            Write-Output $matches[1] ^
+                        }"
+                        ''',
+                        returnStdout: true
+                    ).trim()
+
+                    env.CURRENT_ACTIVE_PORT = activePort
+
+                    if (activePort == env.BLUE_PORT) {
+                        env.ACTIVE_SLOT = "BLUE"
+                        env.IDLE_SLOT   = "GREEN"
+                        env.DEPLOY_PATH = env.GREEN_PATH
+                        env.DEPLOY_SITE = env.GREEN_SITE
+                        env.DEPLOY_PORT = env.GREEN_PORT
+                    } else if (activePort == env.GREEN_PORT) {
+                        env.ACTIVE_SLOT = "GREEN"
+                        env.IDLE_SLOT   = "BLUE"
+                        env.DEPLOY_PATH = env.BLUE_PATH
+                        env.DEPLOY_SITE = env.BLUE_SITE
+                        env.DEPLOY_PORT = env.BLUE_PORT
+                    } else {
+                        error "❌ Could not detect active frontend slot from proxy config."
+                    }
+
+                    echo "=============================================="
+                    echo "Current Active Frontend Slot : ${env.ACTIVE_SLOT} (${env.CURRENT_ACTIVE_PORT})"
+                    echo "Idle Frontend Slot to Deploy : ${env.IDLE_SLOT} (${env.DEPLOY_PORT})"
+                    echo "Deployment Path              : ${env.DEPLOY_PATH}"
+                    echo "Deployment Site              : ${env.DEPLOY_SITE}"
+                    echo "=============================================="
+                }
+            }
+        }
+
+        stage('Download Artifact from JFrog') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'artifactory-creds', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                    bat '''
+                    curl.exe -u %USER%:%PASS% -o "%TEMP_PATH%\\frontend.zip" "%JFROG_URL%/latest.zip"
+
+                    if not exist "%TEMP_PATH%\\frontend.zip" (
+                        echo ❌ Artifact download failed
+                        exit /b 1
+                    )
+                    '''
+                }
+            }
+        }
+
+        stage('Extract Artifact') {
+            steps {
+                bat '''
+                powershell -NoProfile -Command "Expand-Archive -Path '%TEMP_PATH%\\frontend.zip' -DestinationPath '%TEMP_PATH%\\extracted' -Force"
+                '''
+            }
+        }
+
+        stage('Deploy to Idle Slot (Preserve web.config)') {
+            steps {
+                bat '''
+                echo ==============================================
+                echo Deploying to idle frontend slot: %IDLE_SLOT%
+                echo Target Path: %DEPLOY_PATH%
+                echo ==============================================
+
+                if not exist "%DEPLOY_PATH%" mkdir "%DEPLOY_PATH%"
+
+                REM Copy all files except protected frontend config
+                xcopy "%TEMP_PATH%\\extracted\\*" "%DEPLOY_PATH%\\" /E /H /C /I /Y /EXCLUDE:%EXCLUDE_FILE%
+
+                if errorlevel 1 (
+                    echo ❌ XCOPY deployment failed
+                    exit /b 1
+                )
+                '''
+            }
+        }
+
+        stage('Restart Idle Frontend Site') {
+            steps {
+                bat '''
+                echo Restarting IIS Site: %DEPLOY_SITE%
+                powershell -NoProfile -Command "Import-Module WebAdministration; Restart-WebItem 'IIS:\\Sites\\%DEPLOY_SITE%'"
+                '''
+            }
+        }
+
+        stage('Validate Idle Frontend Slot') {
+            steps {
+                bat '''
+                echo ==============================================
+                echo Validating frontend on http://localhost:%DEPLOY_PORT%
+                echo ==============================================
+
+                powershell -NoProfile -Command ^
+                "$maxRetries = 10; ^
+                 $retryDelay = 5; ^
+                 $url = 'http://localhost:%DEPLOY_PORT%'; ^
+                 $success = $false; ^
+                 for ($i=1; $i -le $maxRetries; $i++) { ^
+                    try { ^
+                        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15; ^
+                        if ($response.StatusCode -eq 200) { ^
+                            Write-Host '✅ Frontend validation passed'; ^
+                            $success = $true; ^
+                            break; ^
+                        } ^
+                    } catch { ^
+                        Write-Host ('Attempt ' + $i + ' failed. Retrying in ' + $retryDelay + ' seconds...'); ^
+                        Start-Sleep -Seconds $retryDelay; ^
+                    } ^
+                 } ^
+                 if (-not $success) { ^
+                    Write-Error '❌ Frontend validation failed after retries'; ^
+                    exit 1; ^
+                 }"
+                '''
+            }
+        }
+
+        stage('Switch Frontend Traffic in Proxy') {
+            steps {
+                bat '''
+                echo ==============================================
+                echo Switching frontend traffic in proxy
+                echo From: %CURRENT_ACTIVE_PORT%
+                echo To  : %DEPLOY_PORT%
+                echo ==============================================
+
+                powershell -NoProfile -Command ^
+                "$file = '%PROXY_CONFIG%'; ^
+                 $content = Get-Content $file -Raw; ^
+                 $content = $content -replace 'http://localhost:%CURRENT_ACTIVE_PORT%/', 'http://localhost:%DEPLOY_PORT%/'; ^
+                 Set-Content -Path $file -Value $content -Encoding UTF8"
+
+                echo ✅ Frontend proxy switch completed.
+                '''
+            }
+        }
+
+        stage('Restart Proxy Site') {
+            steps {
+                bat '''
+                echo Restarting IIS Proxy Site: %PROXY_SITE%
+                powershell -NoProfile -Command "Import-Module WebAdministration; Restart-WebItem 'IIS:\\Sites\\%PROXY_SITE%'"
+                '''
+            }
+        }
+
+        stage('Final Proxy Validation') {
+            steps {
+                bat '''
+                echo ==============================================
+                echo Validating frontend through proxy
+                echo URL: http://localhost:8090
+                echo ==============================================
+
+                powershell -NoProfile -Command ^
+                "$url = 'http://localhost:8090'; ^
+                 try { ^
+                    $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15; ^
+                    if ($response.StatusCode -eq 200) { ^
+                        Write-Host '✅ Proxy validation successful'; ^
+                    } else { ^
+                        Write-Error '❌ Proxy validation failed'; ^
+                        exit 1; ^
+                    } ^
+                 } catch { ^
+                    Write-Error '❌ Proxy validation failed'; ^
+                    exit 1; ^
+                 }"
+                '''
+            }
+        }
+
+        stage('Cleanup Temp') {
+            steps {
+                bat '''
+                if exist "%TEMP_PATH%" (
+                    rmdir /s /q "%TEMP_PATH%"
+                )
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "=============================================="
+            echo "✅ Frontend Blue-Green Deployment SUCCESS"
+            echo "🎯 Active frontend slot is now: ${env.IDLE_SLOT} (${env.DEPLOY_PORT})"
+            echo "=============================================="
+        }
+
+        failure {
+            echo "=============================================="
+            echo "❌ Frontend Deployment FAILED"
+            echo "⚠️ Proxy switch is considered valid only if validation passed."
+            echo "=============================================="
+        }
+
+        always {
+            echo "=============================================="
+            echo "📌 Deployment Summary"
+            echo "Previous Active Slot : ${env.ACTIVE_SLOT} (${env.CURRENT_ACTIVE_PORT})"
+            echo "Deployed Idle Slot   : ${env.IDLE_SLOT} (${env.DEPLOY_PORT})"
+            echo "Target IIS Site      : ${env.DEPLOY_SITE}"
+            echo "Target Path          : ${env.DEPLOY_PATH}"
+            echo "=============================================="
+        }
+    }
+}

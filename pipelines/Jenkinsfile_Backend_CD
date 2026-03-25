@@ -94,11 +94,11 @@ pipeline {
         // ===============================
         // Runtime Variables (set dynamically)
         // ===============================
-        ACTIVE_SLOT        = ""
-        IDLE_SLOT          = ""
-        DEPLOY_PATH        = ""
-        DEPLOY_SITE        = ""
-        DEPLOY_PORT        = ""
+        ACTIVE_SLOT         = ""
+        IDLE_SLOT           = ""
+        DEPLOY_PATH         = ""
+        DEPLOY_SITE         = ""
+        DEPLOY_PORT         = ""
         CURRENT_ACTIVE_PORT = ""
     }
 
@@ -131,11 +131,7 @@ logs
                     def activePort = bat(
                         script: '''
                         @echo off
-                        powershell -NoProfile -Command ^
-                        "$content = Get-Content '%PROXY_CONFIG%' -Raw; ^
-                        if ($content -match 'http://localhost:(8091|8092)/api') { ^
-                            Write-Output $matches[1] ^
-                        }"
+                        powershell -NoProfile -ExecutionPolicy Bypass -Command "$content = Get-Content '%PROXY_CONFIG%' -Raw; if ($content -match 'http://localhost:(8091|8092)/api') { Write-Output $matches[1] }"
                         ''',
                         returnStdout: true
                     ).trim()
@@ -172,7 +168,7 @@ logs
             steps {
                 withCredentials([usernamePassword(credentialsId: 'artifactory-creds', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
                     bat '''
-                    curl.exe -u %USER%:%PASS% -o "%TEMP_PATH%\\backend.zip" "%JFROG_URL%/latest.zip"
+                    curl.exe -u %USER%:%PASS% -L -o "%TEMP_PATH%\\backend.zip" "%JFROG_URL%/latest.zip"
 
                     if not exist "%TEMP_PATH%\\backend.zip" (
                         echo ❌ Artifact download failed
@@ -186,7 +182,7 @@ logs
         stage('Extract Artifact') {
             steps {
                 bat '''
-                powershell -NoProfile -Command "Expand-Archive -Path '%TEMP_PATH%\\backend.zip' -DestinationPath '%TEMP_PATH%\\extracted' -Force"
+                powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Path '%TEMP_PATH%\\backend.zip' -DestinationPath '%TEMP_PATH%\\extracted' -Force"
                 '''
             }
         }
@@ -216,7 +212,7 @@ logs
             steps {
                 bat '''
                 echo Restarting IIS Site: %DEPLOY_SITE%
-                powershell -NoProfile -Command "Import-Module WebAdministration; Restart-WebItem 'IIS:\\Sites\\%DEPLOY_SITE%'"
+                powershell -NoProfile -ExecutionPolicy Bypass -Command "Import-Module WebAdministration; Restart-WebItem 'IIS:\\Sites\\%DEPLOY_SITE%'"
                 '''
             }
         }
@@ -228,28 +224,7 @@ logs
                 echo Running health check on http://localhost:%DEPLOY_PORT%/swagger
                 echo ==============================================
 
-                powershell -NoProfile -Command ^
-                "$maxRetries = 10; ^
-                 $retryDelay = 5; ^
-                 $url = 'http://localhost:%DEPLOY_PORT%/swagger'; ^
-                 $success = $false; ^
-                 for ($i=1; $i -le $maxRetries; $i++) { ^
-                    try { ^
-                        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15; ^
-                        if ($response.StatusCode -eq 200) { ^
-                            Write-Host '✅ Health check passed'; ^
-                            $success = $true; ^
-                            break; ^
-                        } ^
-                    } catch { ^
-                        Write-Host ('Attempt ' + $i + ' failed. Retrying in ' + $retryDelay + ' seconds...'); ^
-                        Start-Sleep -Seconds $retryDelay; ^
-                    } ^
-                 } ^
-                 if (-not $success) { ^
-                    Write-Error '❌ Health check failed after retries'; ^
-                    exit 1; ^
-                 }"
+                powershell -NoProfile -ExecutionPolicy Bypass -Command "$maxRetries = 10; $retryDelay = 5; $url = 'http://localhost:%DEPLOY_PORT%/swagger'; $success = $false; for ($i=1; $i -le $maxRetries; $i++) { try { $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15; if ($response.StatusCode -eq 200) { Write-Host 'Health check passed'; $success = $true; break } } catch { Write-Host ('Attempt ' + $i + ' failed. Retrying in ' + $retryDelay + ' seconds...'); Start-Sleep -Seconds $retryDelay } }; if (-not $success) { Write-Error 'Health check failed after retries'; exit 1 }"
                 '''
             }
         }
@@ -263,13 +238,9 @@ logs
                 echo To  : %DEPLOY_PORT%
                 echo ==============================================
 
-                powershell -NoProfile -Command ^
-                "$file = '%PROXY_CONFIG%'; ^
-                 $content = Get-Content $file -Raw; ^
-                 $content = $content -replace 'http://localhost:%CURRENT_ACTIVE_PORT%/api', 'http://localhost:%DEPLOY_PORT%/api'; ^
-                 Set-Content -Path $file -Value $content -Encoding UTF8"
+                powershell -NoProfile -ExecutionPolicy Bypass -Command "$file = '%PROXY_CONFIG%'; $content = Get-Content $file -Raw; $content = $content -replace 'http://localhost:%CURRENT_ACTIVE_PORT%/api', 'http://localhost:%DEPLOY_PORT%/api'; Set-Content -Path $file -Value $content -Encoding UTF8"
 
-                echo ✅ Backend proxy switch completed.
+                echo Backend proxy switch completed.
                 '''
             }
         }
@@ -278,7 +249,7 @@ logs
             steps {
                 bat '''
                 echo Restarting IIS Proxy Site: %PROXY_SITE%
-                powershell -NoProfile -Command "Import-Module WebAdministration; Restart-WebItem 'IIS:\\Sites\\%PROXY_SITE%'"
+                powershell -NoProfile -ExecutionPolicy Bypass -Command "Import-Module WebAdministration; Restart-WebItem 'IIS:\\Sites\\%PROXY_SITE%'"
                 '''
             }
         }
@@ -291,20 +262,7 @@ logs
                 echo URL: http://localhost:8090/api
                 echo ==============================================
 
-                powershell -NoProfile -Command ^
-                "$url = 'http://localhost:8090/api'; ^
-                 try { ^
-                    $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15; ^
-                    if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) { ^
-                        Write-Host '✅ Proxy validation successful'; ^
-                    } else { ^
-                        Write-Error '❌ Proxy validation failed'; ^
-                        exit 1; ^
-                    } ^
-                 } catch { ^
-                    Write-Error '❌ Proxy validation failed'; ^
-                    exit 1; ^
-                 }"
+                powershell -NoProfile -ExecutionPolicy Bypass -Command "$url = 'http://localhost:8090/api'; try { $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15; if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) { Write-Host 'Proxy validation successful' } else { Write-Error 'Proxy validation failed'; exit 1 } } catch { Write-Error 'Proxy validation failed'; exit 1 }"
                 '''
             }
         }
@@ -323,21 +281,21 @@ logs
     post {
         success {
             echo "=============================================="
-            echo "✅ Backend Blue-Green Deployment SUCCESS"
-            echo "🎯 Active backend slot is now: ${env.IDLE_SLOT} (${env.DEPLOY_PORT})"
+            echo "Backend Blue-Green Deployment SUCCESS"
+            echo "Active backend slot is now: ${env.IDLE_SLOT} (${env.DEPLOY_PORT})"
             echo "=============================================="
         }
 
         failure {
             echo "=============================================="
-            echo "❌ Backend Deployment FAILED"
-            echo "⚠️ Proxy switch is considered valid only if health check passed."
+            echo "Backend Deployment FAILED"
+            echo "Proxy switch is considered valid only if health check passed."
             echo "=============================================="
         }
 
         always {
             echo "=============================================="
-            echo "📌 Deployment Summary"
+            echo "Deployment Summary"
             echo "Previous Active Slot : ${env.ACTIVE_SLOT} (${env.CURRENT_ACTIVE_PORT})"
             echo "Deployed Idle Slot   : ${env.IDLE_SLOT} (${env.DEPLOY_PORT})"
             echo "Target IIS Site      : ${env.DEPLOY_SITE}"

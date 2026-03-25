@@ -87,11 +87,6 @@ pipeline {
         PROXY_CONFIG    = "C:\\inetpub\\ecommerce-proxy\\web.config"
 
         // ===============================
-        // Exclude File (preserve configs)
-        // ===============================
-        EXCLUDE_FILE    = "exclude.txt"
-
-        // ===============================
         // Auto-generated deploy context file
         // ===============================
         DEPLOY_ENV_FILE = "deploy-env.bat"
@@ -107,16 +102,6 @@ pipeline {
                 )
                 mkdir "%TEMP_PATH%"
                 '''
-            }
-        }
-
-        stage('Create Exclude File') {
-            steps {
-                writeFile file: "${env.EXCLUDE_FILE}", text: '''web.config
-appsettings.json
-appsettings.Production.json
-logs
-'''
             }
         }
 
@@ -212,24 +197,46 @@ set DEPLOY_PORT=$deployPort
             }
         }
 
-        stage('Deploy to Idle Slot (Preserve Configs)') {
+        stage('Deploy to Idle Slot (Clean Deploy, Preserve Configs)') {
             steps {
-                bat '''
-                call "%DEPLOY_ENV_FILE%"
+                powershell '''
+                $envFile = "$env:WORKSPACE\\$env:DEPLOY_ENV_FILE"
 
-                echo ==============================================
-                echo Deploying to idle backend slot: %IDLE_SLOT%
-                echo Target Path: %DEPLOY_PATH%
-                echo ==============================================
+                if (-not (Test-Path $envFile)) {
+                    throw "Deploy env file not found: $envFile"
+                }
 
-                if not exist "%DEPLOY_PATH%" mkdir "%DEPLOY_PATH%"
+                $deployPath = (Get-Content $envFile | Where-Object { $_ -match '^set DEPLOY_PATH=' }) -replace '^set DEPLOY_PATH=', ''
 
-                xcopy "%TEMP_PATH%\\extracted\\*" "%DEPLOY_PATH%\\" /E /H /C /I /Y /EXCLUDE:%EXCLUDE_FILE%
+                if ([string]::IsNullOrWhiteSpace($deployPath)) {
+                    throw "DEPLOY_PATH not found in deploy env file."
+                }
 
-                if errorlevel 1 (
-                    echo XCOPY deployment failed
-                    exit /b 1
+                Write-Host "=============================================="
+                Write-Host "Clean deploying to: $deployPath"
+                Write-Host "=============================================="
+
+                if (-not (Test-Path $deployPath)) {
+                    New-Item -ItemType Directory -Path $deployPath -Force | Out-Null
+                }
+
+                # Preserve these files/folders
+                $preserve = @(
+                    "web.config",
+                    "appsettings.json",
+                    "appsettings.Production.json",
+                    "logs"
                 )
+
+                # Remove old deployment files except preserved ones
+                Get-ChildItem -Path $deployPath -Force | Where-Object {
+                    $preserve -notcontains $_.Name
+                } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+                # Copy fresh published files
+                Copy-Item "$env:TEMP_PATH\\extracted\\*" -Destination $deployPath -Recurse -Force
+
+                Write-Host "Fresh deployment copied successfully."
                 '''
             }
         }
@@ -277,16 +284,16 @@ set DEPLOY_PORT=$deployPort
                     throw "DEPLOY_PORT not found in deploy env file."
                 }
 
-                $maxRetries = 10
+                $maxRetries = 12
                 $retryDelay = 5
-                $url = "http://localhost:$deployPort/swagger"
+                $url = "http://localhost:$deployPort/swagger/index.html"
                 $success = $false
 
                 Write-Host "Running health check on $url"
 
                 for ($i = 1; $i -le $maxRetries; $i++) {
                     try {
-                        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15
+                        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20
                         if ($response.StatusCode -eq 200) {
                             Write-Host "Health check passed"
                             $success = $true
@@ -361,13 +368,13 @@ set DEPLOY_PORT=$deployPort
         stage('Final Proxy Validation') {
             steps {
                 powershell '''
-                $url = "http://localhost:8090/api"
+                $url = "http://localhost:8090/swagger/index.html"
 
                 Write-Host "Validating backend through proxy: $url"
 
                 try {
-                    $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15
-                    if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
+                    $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20
+                    if ($response.StatusCode -eq 200) {
                         Write-Host "Proxy validation successful"
                     } else {
                         throw "Proxy validation failed with status code: $($response.StatusCode)"

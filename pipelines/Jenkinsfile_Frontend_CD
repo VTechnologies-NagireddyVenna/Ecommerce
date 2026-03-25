@@ -244,14 +244,35 @@ set DEPLOY_PORT=$deployPort
                     New-Item -ItemType Directory -Path $deployPath -Force | Out-Null
                 }
 
-                # Preserve only logs if present (usually frontend doesn't need preserve)
+                # Preserve only logs if present
                 $preserve = @("logs")
 
                 Get-ChildItem -Path $deployPath -Force | Where-Object {
                     $preserve -notcontains $_.Name
                 } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-                Copy-Item "$env:TEMP_PATH\\extracted\\*" -Destination $deployPath -Recurse -Force
+                $extractRoot = "$env:TEMP_PATH\\extracted"
+
+                # Detect actual Angular app root
+                if (Test-Path "$extractRoot\\index.html") {
+                    $sourcePath = $extractRoot
+                }
+                elseif (Test-Path "$extractRoot\\ecommerce-ui\\index.html") {
+                    $sourcePath = "$extractRoot\\ecommerce-ui"
+                }
+                elseif (Test-Path "$extractRoot\\browser\\index.html") {
+                    $sourcePath = "$extractRoot\\browser"
+                }
+                elseif (Test-Path "$extractRoot\\ecommerce-ui\\browser\\index.html") {
+                    $sourcePath = "$extractRoot\\ecommerce-ui\\browser"
+                }
+                else {
+                    throw "Could not find Angular app root (index.html) in extracted artifact."
+                }
+
+                Write-Host "Detected frontend app source path: $sourcePath"
+
+                Copy-Item "$sourcePath\\*" -Destination $deployPath -Recurse -Force
 
                 Write-Host "Frontend files copied successfully."
                 '''
